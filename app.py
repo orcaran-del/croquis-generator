@@ -40,4 +40,4 @@ if uploaded_file:
     )
 else:
     st.info("Your model photo will appear here.")
-0--
+
