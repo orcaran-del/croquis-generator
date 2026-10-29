@@ -59,12 +59,15 @@ if uploaded:
             with st.spinner("Detecting body pose..."):
                 detector = load_pose_detector()
 
-                rgb = np.array(image)
-                mp_image = mp.Image(
-                    image_format=mp.ImageFormat.SRGB,
-                    data=rgb
-                )
-                result = detector.detect(mp_image)
+                rgb = np.array(image.convert("RGB"), dtype=np.uint8)
+rgb = np.ascontiguousarray(rgb)
+
+mp_image = mp.Image(
+    image_format=mp.ImageFormat.SRGB,
+    data=rgb
+)
+
+result = detector.detect(mp_image)
 
                 if not result.pose_landmarks:
                     st.warning(
