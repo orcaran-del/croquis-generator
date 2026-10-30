@@ -8,6 +8,7 @@ from mediapipe.tasks.python import vision
 import urllib.request
 import os
 from io import BytesIO
+import math
 
 st.set_page_config(
     page_title="Croquis Studio",
@@ -16,7 +17,7 @@ st.set_page_config(
 )
 
 st.title("✏️ Croquis Studio")
-st.write("Turn a model photo into a clean fashion croquis.")
+st.write("Create a clean fashion croquis from a model photo.")
 
 MODEL_PATH = "pose_landmarker.task"
 
@@ -43,158 +44,253 @@ def load_detector():
     return vision.PoseLandmarker.create_from_options(options)
 
 
-def midpoint(a, b):
-    return (
-        (a[0] + b[0]) / 2,
-        (a[1] + b[1]) / 2
-    )
+def create_croquis(landmarks, width, height):
 
-
-def draw_croquis(landmarks, width, height):
     scale = 3
-    canvas = Image.new(
-        "RGB",
-        (width * scale, height * scale),
-        "white"
-    )
+    W = width * scale
+    H = height * scale
 
+    canvas = Image.new("RGB", (W, H), "white")
     draw = ImageDraw.Draw(canvas)
 
-    def point(index):
+    def p(index):
         lm = landmarks[index]
+        return (int(lm.x * W), int(lm.y * H))
+
+    def midpoint(a, b):
         return (
-            int(lm.x * width * scale),
-            int(lm.y * height * scale)
+            int((a[0] + b[0]) / 2),
+            int((a[1] + b[1]) / 2)
         )
 
-    def line(points, thickness=5):
-        draw.line(
-            points,
-            fill="black",
-            width=thickness * scale,
-            joint="curve"
+    def distance(a, b):
+        return math.hypot(b[0] - a[0], b[1] - a[1])
+
+    def segment(a, b, width_a, width_b=None):
+        if width_b is None:
+            width_b = width_a
+
+        dx = b[0] - a[0]
+        dy = b[1] - a[1]
+        length = math.hypot(dx, dy)
+
+        if length < 2:
+            return
+
+        nx = -dy / length
+        ny = dx / length
+
+        polygon = [
+            (int(a[0] + nx * width_a),
+             int(a[1] + ny * width_a)),
+            (int(b[0] + nx * width_b),
+             int(b[1] + ny * width_b)),
+            (int(b[0] - nx * width_b),
+             int(b[1] - ny * width_b)),
+            (int(a[0] - nx * width_a),
+             int(a[1] - ny * width_a))
+        ]
+
+        draw.polygon(
+            polygon,
+            fill="white",
+            outline="black",
+            width=4 * scale
         )
 
-    def joint(p, radius=4):
-        r = radius * scale
+        # Rounded ends
+        for center, radius in [
+            (a, width_a),
+            (b, width_b)
+        ]:
+            draw.ellipse(
+                (
+                    center[0] - radius,
+                    center[1] - radius,
+                    center[0] + radius,
+                    center[1] + radius
+                ),
+                fill="white",
+                outline="black",
+                width=4 * scale
+            )
+
+    def joint(center, radius):
         draw.ellipse(
-            (p[0] - r, p[1] - r,
-             p[0] + r, p[1] + r),
-            fill="black"
+            (
+                center[0] - radius,
+                center[1] - radius,
+                center[0] + radius,
+                center[1] + radius
+            ),
+            fill="white",
+            outline="black",
+            width=4 * scale
         )
 
-    # Main body landmarks
-    nose = point(0)
-    left_shoulder = point(11)
-    right_shoulder = point(12)
-    left_elbow = point(13)
-    right_elbow = point(14)
-    left_wrist = point(15)
-    right_wrist = point(16)
+    # Main landmarks
+    nose = p(0)
 
-    left_hip = point(23)
-    right_hip = point(24)
-    left_knee = point(25)
-    right_knee = point(26)
-    left_ankle = point(27)
-    right_ankle = point(28)
-    left_foot = point(31)
-    right_foot = point(32)
+    ls, rs = p(11), p(12)
+    le, re = p(13), p(14)
+    lw, rw = p(15), p(16)
 
-    shoulder_mid = midpoint(left_shoulder, right_shoulder)
-    hip_mid = midpoint(left_hip, right_hip)
+    lh, rh = p(23), p(24)
+    lk, rk = p(25), p(26)
+    la, ra = p(27), p(28)
+    lf, rf = p(31), p(32)
+
+    shoulder_mid = midpoint(ls, rs)
+    hip_mid = midpoint(lh, rh)
+
+    shoulder_width = max(distance(ls, rs), 15 * scale)
+    hip_width = max(distance(lh, rh), 12 * scale)
 
     # Head
-    head_size = max(
-        12 * scale,
-        int(abs(shoulder_mid[1] - nose[1]) * 0.8)
-    )
+    head_radius_x = int(shoulder_width * 0.23)
+    head_radius_y = int(head_radius_x * 1.25)
 
-    head_box = (
-        nose[0] - head_size // 2,
-        nose[1] - head_size,
-        nose[0] + head_size // 2,
-        nose[1]
+    head_center = (
+        nose[0],
+        int(nose[1] - head_radius_y * 0.45)
     )
 
     draw.ellipse(
-        head_box,
+        (
+            head_center[0] - head_radius_x,
+            head_center[1] - head_radius_y,
+            head_center[0] + head_radius_x,
+            head_center[1] + head_radius_y
+        ),
+        fill="white",
         outline="black",
         width=5 * scale
     )
 
     # Neck
+    neck_width = int(shoulder_width * 0.10)
+
     neck_top = (
         shoulder_mid[0],
-        shoulder_mid[1] - 3 * scale
+        head_center[1] + head_radius_y - 2 * scale
     )
 
     neck_bottom = (
         shoulder_mid[0],
-        shoulder_mid[1] + 8 * scale
+        shoulder_mid[1]
     )
 
-    line([neck_top, neck_bottom], 4)
+    segment(neck_top, neck_bottom, neck_width)
 
-    # Torso outline
-    torso_top_left = (
-        left_shoulder[0],
-        left_shoulder[1]
+    # Torso shape
+    torso_length = max(
+        distance(shoulder_mid, hip_mid),
+        20 * scale
     )
-    torso_top_right = (
-        right_shoulder[0],
-        right_shoulder[1]
+
+    waist_y = int(
+        shoulder_mid[1] + torso_length * 0.55
     )
+
+    waist_center = (
+        int((shoulder_mid[0] + hip_mid[0]) / 2),
+        waist_y
+    )
+
+    waist_width = int(
+        min(shoulder_width * 0.29, hip_width * 0.42)
+    )
+
+    shoulder_left = ls
+    shoulder_right = rs
 
     waist_left = (
-        int(left_shoulder[0] * 0.35 + left_hip[0] * 0.65),
-        int(left_shoulder[1] * 0.35 + left_hip[1] * 0.65)
+        waist_center[0] - waist_width,
+        waist_center[1]
     )
 
     waist_right = (
-        int(right_shoulder[0] * 0.35 + right_hip[0] * 0.65),
-        int(right_shoulder[1] * 0.35 + right_hip[1] * 0.65)
+        waist_center[0] + waist_width,
+        waist_center[1]
     )
 
     torso_points = [
-        neck_bottom,
-        torso_top_left,
+        (shoulder_mid[0] - neck_width, neck_bottom[1]),
+        shoulder_left,
         waist_left,
-        left_hip,
-        right_hip,
+        lh,
+        rh,
         waist_right,
-        torso_top_right,
-        neck_bottom
+        shoulder_right,
+        (shoulder_mid[0] + neck_width, neck_bottom[1])
     ]
 
-    line(torso_points, 5)
+    draw.polygon(
+        torso_points,
+        fill="white",
+        outline="black",
+        width=5 * scale
+    )
 
     # Arms
+    arm_width = shoulder_width * 0.12
+    forearm_width = shoulder_width * 0.085
+
     for shoulder, elbow, wrist in [
-        (left_shoulder, left_elbow, left_wrist),
-        (right_shoulder, right_elbow, right_wrist)
+        (ls, le, lw),
+        (rs, re, rw)
     ]:
-        line([shoulder, elbow, wrist], 5)
-        joint(elbow, 3)
-        joint(wrist, 3)
+        segment(
+            shoulder,
+            elbow,
+            int(arm_width),
+            int(arm_width * 0.8)
+        )
+
+        segment(
+            elbow,
+            wrist,
+            int(forearm_width),
+            int(forearm_width * 0.65)
+        )
+
+        joint(elbow, int(arm_width * 0.7))
 
     # Legs
+    thigh_width = hip_width * 0.22
+    calf_width = hip_width * 0.14
+
     for hip, knee, ankle, foot in [
-        (left_hip, left_knee, left_ankle, left_foot),
-        (right_hip, right_knee, right_ankle, right_foot)
+        (lh, lk, la, lf),
+        (rh, rk, ra, rf)
     ]:
-        line([hip, knee, ankle], 6)
-        line([ankle, foot], 4)
-        joint(knee, 3)
-        joint(ankle, 3)
+        segment(
+            hip,
+            knee,
+            int(thigh_width),
+            int(thigh_width * 0.72)
+        )
 
-    # Small shoulder and hip details
-    joint(left_shoulder, 3)
-    joint(right_shoulder, 3)
-    joint(left_hip, 3)
-    joint(right_hip, 3)
+        segment(
+            knee,
+            ankle,
+            int(calf_width),
+            int(calf_width * 0.55)
+        )
 
-    # Return to original image dimensions
+        joint(knee, int(calf_width * 0.65))
+
+        # Feet
+        foot_width = int(calf_width * 0.75)
+
+        segment(
+            ankle,
+            foot,
+            foot_width,
+            int(foot_width * 0.65)
+        )
+
+    # Downsample for smoother lines
     canvas = canvas.resize(
         (width, height),
         Image.Resampling.LANCZOS
@@ -208,14 +304,17 @@ uploaded = st.file_uploader(
     type=["jpg", "jpeg", "png", "webp"]
 )
 
-if uploaded:
+if uploaded is not None:
+
     image = Image.open(uploaded).convert("RGB")
 
     st.subheader("Original photo")
     st.image(image, use_container_width=True)
 
     if st.button("Create fashion croquis"):
-        with st.spinner("Creating your croquis..."):
+
+        with st.spinner("Drawing your fashion figure..."):
+
             try:
                 detector = load_detector()
 
@@ -231,19 +330,18 @@ if uploaded:
 
                 if not result.pose_landmarks:
                     st.warning(
-                        "No body detected. Try a clear full-body photo."
+                        "No person detected. Try a clear full-body photo."
                     )
 
                 else:
-                    landmarks = result.pose_landmarks[0]
-
-                    croquis = draw_croquis(
-                        landmarks,
+                    croquis = create_croquis(
+                        result.pose_landmarks[0],
                         image.width,
                         image.height
                     )
 
                     st.subheader("Your fashion croquis")
+
                     st.image(
                         croquis,
                         use_container_width=True
@@ -258,22 +356,22 @@ if uploaded:
                     )
 
                     st.download_button(
-                        "Download croquis",
+                        "Download fashion croquis",
                         data=output.getvalue(),
                         file_name="fashion_croquis.png",
                         mime="image/png"
                     )
 
-                    st.success("Your croquis is ready!")
+                    st.success("Croquis created!")
 
                     st.caption(
-                        "This is a simplified pose-based drawing. "
-                        "Body contours are estimated, not reconstructed "
-                        "from hidden clothing details."
+                        "This is an estimated pose-based fashion figure. "
+                        "Hidden body contours cannot be recovered exactly "
+                        "from clothing."
                     )
 
             except Exception as e:
-                st.error(f"Something went wrong: {e}")
+                st.error(f"Could not create croquis: {e}")
 
 else:
-    st.info("Upload a full-body photo to get started.")
+    st.info("Upload a full-body photo to begin.")
