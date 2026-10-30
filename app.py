@@ -2,11 +2,12 @@
 import streamlit as st
 import numpy as np
 import mediapipe as mp
-from PIL import Image
+from PIL import Image, ImageFilter
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import urllib.request
 import os
+from io import BytesIO
 
 st.set_page_config(
     page_title="Croquis Studio",
@@ -15,9 +16,10 @@ st.set_page_config(
 )
 
 st.title("✏️ Croquis Studio")
-st.write("Turn a model photo into a pose guide for fashion drawing.")
+st.write("Create a printable fashion drawing guide from a model photo.")
 
 MODEL_PATH = "pose_landmarker.task"
+
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/"
     "pose_landmarker/pose_landmarker_lite/float16/1/"
@@ -37,7 +39,8 @@ def load_detector():
     options = vision.PoseLandmarkerOptions(
         base_options=base_options,
         running_mode=vision.RunningMode.IMAGE,
-        num_poses=1
+        num_poses=1,
+        output_segmentation_masks=True
     )
 
     return vision.PoseLandmarker.create_from_options(options)
@@ -55,8 +58,9 @@ if uploaded is not None:
         st.subheader("Original photo")
         st.image(image, use_container_width=True)
 
-        if st.button("Detect the pose"):
-            with st.spinner("Detecting pose..."):
+        if st.button("Create fashion outline"):
+            with st.spinner("Detecting the body outline..."):
+
                 detector = load_detector()
 
                 rgb = np.array(image, dtype=np.uint8)
@@ -69,84 +73,102 @@ if uploaded is not None:
 
                 result = detector.detect(mp_image)
 
-            if result.pose_landmarks:
-                landmarks = result.pose_landmarks[0]
+                if not result.pose_landmarks:
+                    st.warning(
+                        "No person detected. Try a clear, "
+                        "full-body photo."
+                    )
 
-                # Draw the detected body landmarks on a white canvas.
-                import matplotlib.pyplot as plt
+                elif not result.segmentation_masks:
+                    st.warning(
+                        "The body outline could not be generated. "
+                        "Please try another photo."
+                    )
 
-                connections = (
-                    vision.PoseLandmarksConnections.POSE_LANDMARKS
-                    if hasattr(vision, "PoseLandmarksConnections")
-                    else []
-                )
+                else:
+                    # Get the person's segmentation mask.
+                    mask_array = (
+                        result.segmentation_masks[0].numpy_view()
+                    )
 
-                fig, ax = plt.subplots(figsize=(5, 8))
-                ax.set_xlim(0, 1)
-                ax.set_ylim(1, 0)
-                ax.set_aspect("equal")
-                ax.axis("off")
-                fig.patch.set_facecolor("white")
-                ax.set_facecolor("white")
+                    mask_array = np.squeeze(mask_array)
 
-                points = [
-                    (lm.x, lm.y) for lm in landmarks
-                ]
+                    # Convert the mask into a black-and-white image.
+                    mask = Image.fromarray(
+                        (mask_array > 0.5).astype(np.uint8) * 255
+                    )
 
-                # Connect body landmarks when the connection list exists.
-                for connection in connections:
-                    start = connection.start
-                    end = connection.end
+                    # Match the original photo dimensions.
+                    mask = mask.resize(
+                        image.size,
+                        Image.Resampling.LANCZOS
+                    )
 
-                    if start < len(points) and end < len(points):
-                        x1, y1 = points[start]
-                        x2, y2 = points[end]
-                        ax.plot(
-                            [x1, x2],
-                            [y1, y2],
-                            color="black",
-                            linewidth=2
-                        )
+                    # Clean the mask slightly.
+                    mask = mask.filter(
+                        ImageFilter.MedianFilter(size=3)
+                    )
 
-                # Show every detected landmark.
-                xs = [p[0] for p in points]
-                ys = [p[1] for p in points]
-                ax.scatter(xs, ys, color="black", s=12)
+                    # Find the outer edges of the person.
+                    edges = mask.filter(
+                        ImageFilter.FIND_EDGES
+                    )
 
-                st.subheader("Detected pose guide")
-                st.pyplot(fig)
+                    # Make the outline easier to see.
+                    edges = edges.filter(
+                        ImageFilter.MaxFilter(size=3)
+                    )
 
-                from io import BytesIO
+                    edges = edges.point(
+                        lambda p: 255 if p > 20 else 0
+                    )
 
-                output = BytesIO()
-                fig.savefig(
-                    output,
-                    format="png",
-                    dpi=300,
-                    bbox_inches="tight",
-                    facecolor="white"
-                )
-                plt.close(fig)
-                output.seek(0)
+                    # Create a white page with black contours.
+                    outline = Image.new(
+                        "RGB",
+                        image.size,
+                        "white"
+                    )
 
-                st.download_button(
-                    "Download pose guide (PNG)",
-                    data=output.getvalue(),
-                    file_name="croquis_pose_guide.png",
-                    mime="image/png"
-                )
+                    outline.paste(
+                        "black",
+                        mask=edges
+                    )
 
-                st.info(
-                    "This is a pose guide, not a finished fashion "
-                    "croquis. You can use it as a reference for drawing."
-                )
-            else:
-                st.warning(
-                    "No pose detected. Try a clear, full-body photo "
-                    "with the arms and legs visible."
-                )
+                    st.subheader("Your fashion outline")
+                    st.image(
+                        outline,
+                        use_container_width=True
+                    )
+
+                    # Prepare a high-resolution PNG download.
+                    output = BytesIO()
+
+                    outline.save(
+                        output,
+                        format="PNG",
+                        dpi=(300, 300)
+                    )
+
+                    st.download_button(
+                        "Download fashion outline",
+                        data=output.getvalue(),
+                        file_name="croquis_outline.png",
+                        mime="image/png"
+                    )
+
+                    st.success(
+                        "Your outline is ready!"
+                    )
+
+                    st.caption(
+                        "The outline follows the detected body "
+                        "silhouette. Results depend on the photo "
+                        "and may need some manual refinement."
+                    )
 
     except Exception as e:
         st.error(f"Could not process the image: {e}")
+
 else:
-    st.info("Upload a photo to get started.")
+    st.info("Upload a full-body photo to get started.")
